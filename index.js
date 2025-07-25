@@ -2,8 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import routes from './routes.js';
+import { initDB } from './db.js'; // <-- импорт здесь
 
-// Load environment variables from .env file
+// Load environment variables from .env file (на Render это не обязательно, но не мешает)
 dotenv.config();
 
 const app = express();
@@ -21,7 +22,14 @@ app.get('/', (req, res) => {
 // Register API routes
 app.use('/api', routes);
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+// Стартуем сервер только после инициализации БД
+initDB()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server is running on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error('DB init error', err);
+    process.exit(1);
+  });
