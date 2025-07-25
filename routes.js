@@ -2,7 +2,6 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import {
-  // обязательно чтобы ВСЕ эти функции были экспортированы из db.js
   createOrGetUser,
   getUserByTelegramId,
   applyDailyBonus,
@@ -13,9 +12,7 @@ import {
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret';
 
-/* -----------------------------
- * helpers
- * ----------------------------- */
+/* ---------------- helpers ---------------- */
 function signToken(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
 }
@@ -24,27 +21,23 @@ function auth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
 
-  if (!token) {
-    return res.status(401).json({ error: 'No token' });
-  }
+  if (!token) return res.status(401).json({ error: 'No token' });
+
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
-  } catch (e) {
+  } catch (_) {
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
 
-/* -----------------------------
- * Новая авторизация
- * POST /auth  { telegram_id, username }
- * ----------------------------- */
+/* ------------- NEW FLOW (JWT) ------------- */
+
+/** POST /api/auth  { telegram_id, username } */
 router.post('/auth', async (req, res) => {
   try {
     const { telegram_id, username } = req.body;
-    if (!telegram_id) {
-      return res.status(400).json({ error: 'telegram_id is required' });
-    }
+    if (!telegram_id) return res.status(400).json({ error: 'telegram_id is required' });
 
     const user = await createOrGetUser(telegram_id, username || 'Anon');
     const token = signToken({ telegram_id: user.telegram_id });
@@ -64,10 +57,7 @@ router.post('/auth', async (req, res) => {
   }
 });
 
-/* -----------------------------
- * Текущий пользователь
- * GET /me   (Authorization: Bearer <token>)
- * ----------------------------- */
+/** GET /api/me  (Bearer <token>) */
 router.get('/me', auth, async (req, res) => {
   try {
     const { telegram_id } = req.user;
@@ -86,10 +76,7 @@ router.get('/me', auth, async (req, res) => {
   }
 });
 
-/* -----------------------------
- * Ежедневный бонус
- * POST /bonus (Authorization: Bearer <token>)
- * ----------------------------- */
+/** POST /api/bonus  (Bearer <token>) */
 router.post('/bonus', auth, async (req, res) => {
   try {
     const { telegram_id } = req.user;
@@ -101,10 +88,7 @@ router.post('/bonus', auth, async (req, res) => {
   }
 });
 
-/* -----------------------------
- * Обновление монет по результату игры
- * POST /updateCoins  { delta: number }  (Authorization: Bearer <token>)
- * ----------------------------- */
+/** POST /api/updateCoins  { delta } (Bearer <token>) */
 router.post('/updateCoins', auth, async (req, res) => {
   try {
     const { delta } = req.body;
@@ -123,11 +107,7 @@ router.post('/updateCoins', auth, async (req, res) => {
   }
 });
 
-/* -----------------------------
- * Таблица лидеров
- * GET /leaderboard?limit=10
- * (возвращаем { leaderboard: [...] }, чтобы не ломать фронт)
- * ----------------------------- */
+/** GET /api/leaderboard */
 router.get('/leaderboard', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit || '10', 10);
@@ -139,23 +119,14 @@ router.get('/leaderboard', async (req, res) => {
   }
 });
 
-/* ======================================================================
- * ВРЕМЕННЫЕ/СОВМЕСТИМЫЕ ЭНДПОИНТЫ ДЛЯ ТЕКУЩЕГО ФРОНТА
- * Если уже перевёл фронт на JWT (/auth, /me, /bonus, /updateCoins),
- * можешь удалить блок ниже.
- * ====================================================================== */
+/* --------- LEGACY (для старого фронта). Удалишь позже --------- */
 
-/**
- * POST /register
- * body: { telegramId, username }
- * Возвращает { user }
- */
+/** POST /api/register  { telegramId, username } */
 router.post('/register', async (req, res) => {
   try {
     const { telegramId, username } = req.body;
-    if (!telegramId) {
-      return res.status(400).json({ error: 'telegramId is required' });
-    }
+    if (!telegramId) return res.status(400).json({ error: 'telegramId is required' });
+
     const user = await createOrGetUser(telegramId, username || 'Anon');
     res.json({ user });
   } catch (err) {
@@ -164,10 +135,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-/**
- * GET /dailyBonus/:telegramId
- * Старый вариант без JWT.
- */
+/** GET /api/dailyBonus/:telegramId */
 router.get('/dailyBonus/:telegramId', async (req, res) => {
   try {
     const telegramId = parseInt(req.params.telegramId, 10);
@@ -179,11 +147,7 @@ router.get('/dailyBonus/:telegramId', async (req, res) => {
   }
 });
 
-/**
- * POST /updateCoins (legacy)
- * body: { telegramId, delta }
- * Оставлено для совместимости, но лучше использовать защищённый вариант выше.
- */
+/** POST /api/updateCoinsLegacy  { telegramId, delta } */
 router.post('/updateCoinsLegacy', async (req, res) => {
   try {
     const { telegramId, delta } = req.body;
