@@ -96,6 +96,24 @@ export async function applyDailyBonus(telegramId, bonusAmount = 100) {
  * @param {number} limit
  */
 export async function getLeaderboard(limit = 10) {
-  const res = await pool.query('SELECT username, coins FROM users ORDER BY coins DESC LIMIT $1', [limit]);
+  const res = await pool.query(
+    'SELECT username, coins FROM users ORDER BY coins DESC LIMIT $1',
+    [limit]
+  );
   return res.rows;
+}
+
+// ← Обязательно перенести на новую строку!
+
+export async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      telegram_id BIGINT NOT NULL UNIQUE,
+      username TEXT,
+      coins INTEGER NOT NULL DEFAULT 1000,
+      last_bonus TIMESTAMP
+    )
+  `);
+  console.log('DB ready');
 }
