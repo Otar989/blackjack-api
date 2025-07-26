@@ -1,4 +1,3 @@
-// index.js
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -11,21 +10,32 @@ dotenv.config();
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
-const ORIGIN = process.env.FRONT_ORIGIN || 'https://black-jack-otario.vercel.app';
 
-// ───────── middlewares ─────────
+/* --- защита и базовые middlewares --- */
 app.use(helmet());
-app.use(rateLimit({ windowMs: 60_000, limit: 150 }));   // 150 req / минута с IP
-app.use(cors({ origin: ORIGIN }));
+app.use(
+  rateLimit({
+    windowMs: 60_000,
+    max: 200,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
+);
+app.use(cors());
 app.use(express.json());
 
-// ping
-app.get('/', (_, res) => res.json({ ok : true }));
+/* --- healthcheck --- */
+app.get('/', (_, res) => res.json({ ok: true }));
 
-// API
+/* --- API --- */
 app.use('/api', routes);
 
-// ───────── start ─────────
+/* --- старт после инициализации БД --- */
 initDB()
-  .then(() => app.listen(PORT, () => console.log(`API ⟵ ${PORT}`)))
-  .catch((e) => { console.error(e); process.exit(1); });
+  .then(() => {
+    app.listen(PORT, () => console.log(`API on ${PORT}`));
+  })
+  .catch((e) => {
+    console.error('DB INIT FAIL', e);
+    process.exit(1);
+  });
