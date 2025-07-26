@@ -1,3 +1,4 @@
+// routes.js
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import {
@@ -12,70 +13,69 @@ import { verifyInitData } from './telegram.js';
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret';
 
-/* ===== JWT ===== */
+/* ---------- helpers ---------- */
 function sign(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
 }
 function auth(req, res, next) {
-  const hdr = req.headers.authorization || '';
-  const t = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
-  if (!t) return res.status(401).json({ error: 'NO_TOKEN' });
+  const h = req.headers.authorization || '';
+  const token = h.startsWith('Bearer ') ? h.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token' });
   try {
-    req.user = jwt.verify(t, JWT_SECRET);
+    req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch {
-    return res.status(401).json({ error: 'BAD_TOKEN' });
+    return res.status(401).json({ error: 'Invalid token' });
   }
 }
 
-/* ===== API ===== */
-/* POST /api/auth { init_data } */
+/* ----------  POST /api/auth  ----------  
+   Body:
+     — init_data (от Telegram)       ► нормальный сценарий
+     — telegram_id + username       ► dev-режим в браузере
+*/
 router.post('/auth', async (req, res) => {
-  const { init_data = '' } = req.body || {};
-  if (!verifyInitData(init_data)) {
-    return res.status(400).json({ error: 'BAD_SIGNATURE' });
+  try {
+    const { init_data = '', telegram_id, username = 'Anon' } = req.body;
+
+    let tid = telegram_id;
+    /* 1) Telegram WebApp */
+    if (init_data) {
+      if (!verifyInitData(init_data))
+        return res.status(400).json({ error: 'bad init_data' });
+      const url = new URLSearchParams(init_data);
+      tid = Number(JSON.parse(url.get('user')).id);
+    }
+    /* 2) dev-браузер, telegram_id передан напрямую */
+    if (!tid) return res.status(400).json({ error: 'telegram_id required' });
+
+    const user = await createOrGetUser(tid, username);
+    res.json({ token: sign({ telegram_id: tid }), user });
+  } catch (e) {
+    console.error('POST /auth', e);
+    res.status(500).json({ error: 'internal' });
   }
-
-  const url = new URLSearchParams(init_data);
-  const rawUser = JSON.parse(url.get('user'));
-  const telegram_id = rawUser.id;
-  const username =
-    rawUser.username || rawUser.first_name || `Player${telegram_id}`;
-
-  const user = await createOrGetUser(telegram_id, username);
-  const token = sign({ telegram_id });
-
-  res.json({ token, user });
 });
 
-/* GET /api/me */
+/* остальное без изменений … */
 router.get('/me', auth, async (req, res) => {
-  const user = await getUserByTelegramId(req.user.telegram_id);
-  if (!user) return res.status(404).json({ error: 'NOT_FOUND' });
-  res.json(user);
+  const u = await getUserByTelegramId(req.user.telegram_id);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  res.json(u);
 });
-
-/* POST /api/bonus */
 router.post('/bonus', auth, async (req, res) => {
-  const result = await applyDailyBonus(req.user.telegram_id, 100);
-  res.json(result);
+  res.json(await applyDailyBonus(req.user.telegram_id, 100));
 });
-
-/* POST /api/updateCoins { delta } */
 router.post('/updateCoins', auth, async (req, res) => {
-  const { delta } = req.body || {};
+  const { delta } = req.body;
   if (typeof delta !== 'number')
-    return res.status(400).json({ error: 'DELTA_REQUIRED' });
-
+    return res.status(400).json({ error: 'delta must be number' });
   const user = await updateUserCoins(req.user.telegram_id, delta);
   res.json({ user });
 });
-
-/* GET /api/leaderboard */
 router.get('/leaderboard', async (req, res) => {
   const limit = parseInt(req.query.limit || '10', 10);
-  const rows = await getLeaderboard(limit);
-  res.json({ leaderboard: rows });
+  res.json({ leaderboard: await getLeaderboard(limit) });
 });
 
 export default router;
