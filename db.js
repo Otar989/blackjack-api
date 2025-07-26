@@ -5,7 +5,6 @@ dotenv.config();
 
 const { Pool } = pkg;
 
-// Render иногда отдаёт только PG* переменные без DATABASE_URL — поддержим оба варианта.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || undefined,
   host: process.env.PGHOST,
@@ -13,21 +12,14 @@ const pool = new Pool({
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE,
-  // На Render почти всегда нужна SSL. Если у тебя не работает без этого — оставь так.
-  ssl:
-    process.env.DATABASE_SSL === 'false'
-      ? false
-      : { rejectUnauthorized: false },
+  ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
 });
 
-/**
- * Инициализация БД: создаём таблицу users, если её нет.
- */
 export async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
-      telegram_id BIGINT NOT NULL UNIQUE,
+      telegram_id BIGINT UNIQUE NOT NULL,
       username TEXT,
       coins INTEGER NOT NULL DEFAULT 1000,
       last_bonus TIMESTAMP
@@ -36,110 +28,84 @@ export async function initDB() {
   console.log('DB ready');
 }
 
-/**
- * Получить пользователя по telegram_id
- */
-export async function getUserByTelegramId(telegramId) {
-  const res = await pool.query(
+export async function getUserByTelegramId(id) {
+  const { rows } = await pool.query(
     'SELECT * FROM users WHERE telegram_id = $1',
-    [telegramId]
+    [id]
   );
-  return res.rows[0] || null;
+  return rows[0] || null;
 }
 
-/**
- * Создать пользователя (если точно знаем, что его ещё нет)
- */
-export async function createUser(telegramId, username, coins = 1000) {
-  const res = await pool.query(
+export async function createUser(id, username, coins = 1000) {
+  const { rows } = await pool.query(
     `INSERT INTO users (telegram_id, username, coins)
      VALUES ($1, $2, $3)
+     ON CONFLICT (telegram_id) DO NOTHING
      RETURNING *`,
-    [telegramId, username, coins]
+    [id, username, coins]
   );
-  return res.rows[0];
+  return rows[0] || (await getUserByTelegramId(id));
 }
 
-/**
- * Создать пользователя, если его нет. Если есть — вернуть существующего.
- */
-export async function createOrGetUser(telegramId, username = 'Anon') {
-  const existing = await getUserByTelegramId(telegramId);
-  if (existing) return existing;
-  return await createUser(telegramId, username, 1000);
+export async function createOrGetUser(id, username = 'Anon') {
+  const existing = await getUserByTelegramId(id);
+  if (existing) return existing.coins === 0 ? await updateUserCoins(id, 1000) : existing;
+  return createUser(id, username, 1000);
 }
 
-/**
- * Обновить баланс пользователя на delta (может быть отрицательной).
- * Вернёт обновлённую строку пользователя.
- */
-export async function updateUserCoins(telegramId, delta) {
-  const res = await pool.query(
-    'UPDATE users SET coins = coins + $1 WHERE telegram_id = $2 RETURNING *',
-    [delta, telegramId]
+export async function updateUserCoins(id, delta) {
+  const { rows } = await pool.query(
+    'UPDATE users SET coins = GREATEST(coins + $1, 0) WHERE telegram_id = $2 RETURNING *',
+    [delta, id]
   );
-  return res.rows[0];
+  return rows[0];
 }
 
-/**
- * Ежедневный бонус (раз в 24 часа).
- * Возвращает { awarded: boolean, user }
- */
-export async function applyDailyBonus(telegramId, bonusAmount = 100) {
+export async function applyDailyBonus(id, bonus = 100) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-
-    const resSelect = await client.query(
+    const { rows } = await client.query(
       'SELECT * FROM users WHERE telegram_id = $1 FOR UPDATE',
-      [telegramId]
+      [id]
     );
-    const user = resSelect.rows[0];
-
+    const user = rows[0];
     if (!user) {
       await client.query('ROLLBACK');
       return { awarded: false, user: null };
     }
-
-    const lastBonus = user.last_bonus ? new Date(user.last_bonus) : null;
+    const last = user.last_bonus ? new Date(user.last_bonus) : null;
     const now = new Date();
-
-    if (lastBonus && now - lastBonus < 24 * 60 * 60 * 1000) {
+    if (last && now - last < 24 * 60 * 60 * 1000) {
       await client.query('ROLLBACK');
       return { awarded: false, user };
     }
-
-    const resUpdate = await client.query(
+    const { rows: updated } = await client.query(
       `UPDATE users
        SET coins = coins + $1, last_bonus = NOW()
        WHERE telegram_id = $2
        RETURNING *`,
-      [bonusAmount, telegramId]
+      [bonus, id]
     );
-
     await client.query('COMMIT');
-    return { awarded: true, user: resUpdate.rows[0] };
-  } catch (err) {
+    return { awarded: true, user: updated[0] };
+  } catch (e) {
     await client.query('ROLLBACK');
-    throw err;
+    throw e;
   } finally {
     client.release();
   }
 }
 
-/**
- * Топ игроков по количеству монет.
- */
 export async function getLeaderboard(limit = 10) {
-  const res = await pool.query(
+  const { rows } = await pool.query(
     `SELECT username, coins
      FROM users
      ORDER BY coins DESC
      LIMIT $1`,
     [limit]
   );
-  return res.rows;
+  return rows;
 }
 
-// Если где-то захочешь использовать pool напрямую:
 export { pool };
