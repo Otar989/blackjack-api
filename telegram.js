@@ -1,29 +1,24 @@
-// telegram.js  – проверка initData сигнатуры
-import crypto from 'crypto';
+import TelegramBot from 'node-telegram-bot-api';
+import crypto from 'node:crypto';
 
-const { BOT_TOKEN } = process.env;
-const secretKey = crypto
-  .createHash('sha256')
-  .update(BOT_TOKEN)
-  .digest();
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
-export function verifyInitData(initData) {
-  // initData приходит строкой вида 'query_id=AA...&user=...&hash=XYZ'
-  const url = new URLSearchParams(initData);
-  const hash = url.get('hash');           // подпись
-  url.delete('hash');
+export const bot = BOT_TOKEN ? new TelegramBot(BOT_TOKEN, { polling: false }) : null;
 
-  // параметры должны быть отсортированы как в docs
-  const dataCheckString = Array
-    .from(url.entries())
+export function verifyInitData(data = '') {
+  if (!BOT_TOKEN) return false;
+
+  const params = new URLSearchParams(data);
+  const hash = params.get('hash');
+  params.delete('hash');
+
+  const checkString = [...params]
     .map(([k, v]) => `${k}=${v}`)
     .sort()
     .join('\n');
 
-  const hmac = crypto
-    .createHmac('sha256', secretKey)
-    .update(dataCheckString)
-    .digest('hex');
+  const secret = crypto.createHash('sha256').update(BOT_TOKEN).digest();
+  const hmac = crypto.createHmac('sha256', secret).update(checkString).digest('hex');
 
   return hmac === hash;
 }
