@@ -8,189 +8,79 @@ import {
   getLeaderboard,
   updateUserCoins,
 } from './db.js';
+import { verifyInitData } from './telegram.js';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret';
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                            */
-/* ------------------------------------------------------------------ */
-function signToken(payload) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
-}
+/* ───────── helpers ───────── */
+const sign = (payload) => jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
 
-function auth(req, res, next) {
+const auth = (req, res, next) => {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error : 'Нет JWT' });
 
-  if (!token) return res.status(401).json({ error: 'No token' });
+  try        { req.user = jwt.verify(token, JWT_SECRET); next(); }
+  catch (_)  { return res.status(401).json({ error : 'Неверный JWT' }); }
+};
 
+/* ───────── 1. Проверка initData из Telegram ─────────
+   Фронт отсылает запрос POST /api/verify { initData }
+   Бэк сверяет подпись и отдаёт JWT + профиль
+*/
+router.post('/verify', async (req, res) => {
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
-    next();
-  } catch {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-}
+    const { initData } = req.body;
+    if (!initData || !verifyInitData(initData))
+      return res.status(400).json({ error : 'initData неверен' });
 
-function isNumber(v) {
-  return typeof v === 'number' && Number.isFinite(v);
-}
+    // user приходит JSON-строкой внутри initData
+    const tgUser = JSON.parse(
+      decodeURIComponent(new URLSearchParams(initData).get('user'))
+    );
+    const telegram_id = tgUser.id;
+    const username    = tgUser.username || tgUser.first_name || `Player${telegram_id}`;
 
-/* ------------------------------------------------------------------ */
-/* JWT flow                                                           */
-/* ------------------------------------------------------------------ */
+    const user  = await createOrGetUser(telegram_id, username);
+    const token = sign({ telegram_id });
 
-/**
- * POST /api/auth
- * Body: { telegram_id, username }
- * Создаёт пользователя (если нет) и возвращает JWT + профиль.
- */
-router.post('/auth', async (req, res) => {
-  try {
-    const { telegram_id, username } = req.body || {};
-    if (!telegram_id) {
-      return res.status(400).json({ error: 'telegram_id is required' });
-    }
-
-    const user = await createOrGetUser(telegram_id, username || 'Anon');
-    const token = signToken({ telegram_id: user.telegram_id });
-
-    return res.json({
-      token,
-      user: {
-        telegram_id: user.telegram_id,
-        username: user.username,
-        coins: user.coins,
-        last_bonus: user.last_bonus,
-      },
-    });
-  } catch (err) {
-    console.error('POST /auth error', err);
-    return res.status(500).json({ error: 'Internal error' });
+    res.json({ token, user });
+  } catch (e) {
+    console.error('/verify', e);
+    res.status(500).json({ error : 'Ошибка сервера' });
   }
 });
 
-/**
- * GET /api/me
- * Header: Authorization: Bearer <token>
- */
+/* ───────── 2. Профиль ───────── */
 router.get('/me', auth, async (req, res) => {
-  try {
-    const { telegram_id } = req.user;
-    const user = await getUserByTelegramId(telegram_id);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    return res.json({
-      telegram_id: user.telegram_id,
-      username: user.username,
-      coins: user.coins,
-      last_bonus: user.last_bonus,
-    });
-  } catch (err) {
-    console.error('GET /me error', err);
-    return res.status(500).json({ error: 'Internal error' });
-  }
+  const user = await getUserByTelegramId(req.user.telegram_id);
+  if (!user) return res.status(404).json({ error : 'Нет пользователя' });
+  res.json(user);
 });
 
-/**
- * POST /api/bonus
- * Header: Authorization: Bearer <token>
- * Начисляет ежедневный бонус, если прошло 24 часа.
- */
+/* ───────── 3. Бонус ───────── */
 router.post('/bonus', auth, async (req, res) => {
-  try {
-    const { telegram_id } = req.user;
-    const result = await applyDailyBonus(telegram_id, 100);
-    return res.json(result);
-  } catch (err) {
-    console.error('POST /bonus error', err);
-    return res.status(500).json({ error: 'Internal error' });
-  }
+  const result = await applyDailyBonus(req.user.telegram_id, 100);
+  res.json(result);
 });
 
-/**
- * POST /api/updateCoins
- * Header: Authorization: Bearer <token>
- * Body: { delta: number }
- */
+/* ───────── 4. Изменить баланс ───────── */
 router.post('/updateCoins', auth, async (req, res) => {
-  try {
-    const { delta } = req.body || {};
-    if (!isNumber(delta)) {
-      return res.status(400).json({ error: 'delta must be a number' });
-    }
+  const { delta } = req.body;
+  if (typeof delta !== 'number')
+    return res.status(400).json({ error : 'delta должно быть числом' });
 
-    const { telegram_id } = req.user;
-    const user = await updateUserCoins(telegram_id, delta);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    return res.json({ user });
-  } catch (err) {
-    console.error('POST /updateCoins error', err);
-    return res.status(500).json({ error: 'Internal error' });
-  }
+  const user = await updateUserCoins(req.user.telegram_id, delta);
+  res.json({ user });
 });
 
-/**
- * GET /api/leaderboard?limit=10
- */
+/* ───────── 5. Лидерборд ───────── */
 router.get('/leaderboard', async (req, res) => {
-  try {
-    const limit = Number.parseInt(req.query.limit || '10', 10);
-    const rows = await getLeaderboard(Number.isFinite(limit) ? limit : 10);
-    return res.json({ leaderboard: rows });
-  } catch (err) {
-    console.error('GET /leaderboard error', err);
-    return res.status(500).json({ error: 'Internal error' });
-  }
-});
-
-/* ------------------------------------------------------------------ */
-/* LEGACY (старые маршруты под фронт без JWT) — можно удалить позже   */
-/* ------------------------------------------------------------------ */
-
-router.post('/register', async (req, res) => {
-  try {
-    const { telegramId, username } = req.body || {};
-    if (!telegramId) {
-      return res.status(400).json({ error: 'telegramId is required' });
-    }
-    const user = await createOrGetUser(telegramId, username || 'Anon');
-    return res.json({ user });
-  } catch (err) {
-    console.error('POST /register error', err);
-    return res.status(500).json({ error: 'Internal error' });
-  }
-});
-
-router.get('/dailyBonus/:telegramId', async (req, res) => {
-  try {
-    const telegramId = Number.parseInt(req.params.telegramId, 10);
-    const result = await applyDailyBonus(telegramId, 100);
-    return res.json(result);
-  } catch (err) {
-    console.error('GET /dailyBonus/:telegramId error', err);
-    return res.status(500).json({ error: 'Internal error' });
-  }
-});
-
-router.post('/updateCoinsLegacy', async (req, res) => {
-  try {
-    const { telegramId, delta } = req.body || {};
-    if (!telegramId || !isNumber(delta)) {
-      return res
-        .status(400)
-        .json({ error: 'telegramId and numeric delta are required' });
-    }
-    const user = await updateUserCoins(telegramId, delta);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    return res.json({ user });
-  } catch (err) {
-    console.error('POST /updateCoinsLegacy error', err);
-    return res.status(500).json({ error: 'Internal error' });
-  }
+  const rows = await getLeaderboard(
+    parseInt(req.query.limit || '10', 10)
+  );
+  res.json({ leaderboard : rows });
 });
 
 export default router;
