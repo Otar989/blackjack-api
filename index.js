@@ -1,35 +1,31 @@
+// index.js
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import routes from './routes.js';
-import { initDB } from './db.js'; // <-- импорт здесь
+import { initDB } from './db.js';
 
-// Load environment variables from .env file (на Render это не обязательно, но не мешает)
 dotenv.config();
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 4000;
+const ORIGIN = process.env.FRONT_ORIGIN || 'https://black-jack-otario.vercel.app';
 
-// Middlewares
-app.use(cors());
+// ───────── middlewares ─────────
+app.use(helmet());
+app.use(rateLimit({ windowMs: 60_000, limit: 150 }));   // 150 req / минута с IP
+app.use(cors({ origin: ORIGIN }));
 app.use(express.json());
 
-// Health check
-app.get('/', (req, res) => {
-  res.json({ message: 'Blackjack API is running' });
-});
+// ping
+app.get('/', (_, res) => res.json({ ok : true }));
 
-// Register API routes
+// API
 app.use('/api', routes);
 
-// Стартуем сервер только после инициализации БД
+// ───────── start ─────────
 initDB()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error('DB init error', err);
-    process.exit(1);
-  });
+  .then(() => app.listen(PORT, () => console.log(`API ⟵ ${PORT}`)))
+  .catch((e) => { console.error(e); process.exit(1); });
