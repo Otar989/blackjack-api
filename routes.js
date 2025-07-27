@@ -1,49 +1,64 @@
 // backend/routes.js
-import { Router } from 'express';
+import express  from 'express';
+import jwt      from 'jsonwebtoken';
+import dotenv   from 'dotenv';
 import {
-  createOrGetUser,
-  getUser,
-  updateUserCoins,
-  applyDailyBonus,
-  getLeaderboard,
+  initDB, createOrGetUser, getUser,
+  updateUserCoins, applyDailyBonus, getLeaderboard
 } from './db.js';
 
-const router = Router();
+dotenv.config();
+await initDB();
 
-// -------- авторизация ----------
-router.post('/auth', async (req, res) => {
-  const { username } = req.body;          // теперь присылаем username из браузера
-  if (!username) return res.status(400).json({ error:'Username required' });
+const router      = express.Router();
+const JWT_SECRET  = process.env.JWT_SECRET || 'super-secret';
 
-  const user = await createOrGetUser(username);
-  res.json({ user, token: username /* простейший “jwt” */ });
+/** helper ─ проверяем и достаём username из bearer-token */
+function authMiddleware(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error:'no token' });
+
+  try {
+    const { username } = jwt.verify(token, JWT_SECRET);
+    req.username = username;
+    next();
+  } catch {
+    res.status(401).json({ error:'bad token' });
+  }
+}
+
+/** POST /api/auth  { username }  →  { token , user } */
+router.post('/api/auth', async (req, res) => {
+  const { username = '' } = req.body || {};
+  if (!username.trim()) return res.status(400).json({ error:'username required' });
+
+  const user  = await createOrGetUser(username.trim());
+  const token = jwt.sign({ username:user.username }, JWT_SECRET);
+  res.json({ token, user });
 });
 
-// -------- REST остальных энд-пойнтов ----------
-router.get('/me', async (req, res) => {
-  const token = req.get('authorization')?.replace('Bearer ','');
-  const user  = token ? await getUser(token) : null;
-  if (!user) return res.status(401).json({ error:'Auth' });
-  res.json(user);
+/** GET /api/me  ( bearer ) */
+router.get('/api/me', authMiddleware, async (req, res) => {
+  const user = await getUser(req.username);
+  res.json(user || { error:'not found' });
 });
 
-router.post('/updateCoins', async (req, res) => {
-  const token = req.get('authorization')?.replace('Bearer ','');
-  const { delta } = req.body || {};
-  const user = token ? await updateUserCoins(token, Number(delta)||0) : null;
-  if (!user) return res.status(401).json({ error:'Auth' });
-  res.json({ user });
-});
-
-router.post('/bonus', async (req, res) => {
-  const token = req.get('authorization')?.replace('Bearer ','');
-  if (!token) return res.status(401).json({ error:'Auth' });
-  const result = await applyDailyBonus(token);
+/** POST /api/bonus  ( bearer ) */
+router.post('/api/bonus', authMiddleware, async (req, res) => {
+  const result = await applyDailyBonus(req.username);
   res.json(result);
 });
 
-router.get('/leaderboard', async (req,res) => {
-  const limit = Number(req.query.limit)||10;
+/** POST /api/updateCoins { delta }  ( bearer ) */
+router.post('/api/updateCoins', authMiddleware, async (req, res) => {
+  const { delta = 0 } = req.body || {};
+  const user = await updateUserCoins(req.username, Number(delta));
+  res.json({ user });
+});
+
+/** GET /api/leaderboard?limit=10 */
+router.get('/api/leaderboard', async (req, res) => {
+  const limit = Number(req.query.limit) || 10;
   res.json(await getLeaderboard(limit));
 });
 
