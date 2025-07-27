@@ -109,3 +109,9 @@ export async function getLeaderboard(limit = 10) {
   );
   return rows;
 }
+
+/* --- ALIAS, чтобы routes.js не падал --- */
+export const getUser = getUserById;
+
+/* Если нужно напрямую pool */
+export { pool };
