@@ -1,99 +1,105 @@
 // backend/db.js
-import pkg from 'pg';
-import dotenv from 'dotenv';
+import dotenv   from 'dotenv';
+import pkg      from 'pg';
 dotenv.config();
 
 const { Pool } = pkg;
 
+// ——————————————————————————————————————————————
+// Pool
+// ——————————————————————————————————————————————
 export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || undefined,
-  host     : process.env.PGHOST,
-  port     : process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : undefined,
-  user     : process.env.PGUSER,
-  password : process.env.PGPASSWORD,
-  database : process.env.PGDATABASE,
-  ssl      : process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+  connectionString : process.env.DATABASE_URL || undefined,
+  host             : process.env.PGHOST,
+  port             : process.env.PGPORT ? Number(process.env.PGPORT) : undefined,
+  user             : process.env.PGUSER,
+  password         : process.env.PGPASSWORD,
+  database         : process.env.PGDATABASE,
+  ssl              : process.env.DATABASE_SSL === 'false'
+                       ? false
+                       : { rejectUnauthorized: false },
 });
 
-/* ---------- schema init ---------- */
-export async function initDB() {
+// ——————————————————————————————————————————————
+// Schema/init
+// ——————————————————————————————————————————————
+export async function initDB () {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      telegram_id BIGINT UNIQUE,           -- теперь может быть NULL
-      username TEXT NOT NULL,
-      coins    INTEGER NOT NULL DEFAULT 1000,
-      last_bonus TIMESTAMP
-    );
+      id           SERIAL  PRIMARY KEY,
+      username     TEXT    UNIQUE NOT NULL,
+      coins        INT     NOT NULL DEFAULT 1000,
+      last_bonus   TIMESTAMP
+    )
   `);
   console.log('DB ready');
 }
 
-/* ---------- helpers ---------- */
-export async function getUserById(id) {
-  const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
-  return rows[0] || null;
-}
-
-/* >>>  ВОССТАНАВЛИВАЕМ <<< */
-export async function getUserByTelegramId(tid) {
-  if (!tid) return null;
-  const { rows } = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [tid]);
-  return rows[0] || null;
-}
-
-export async function createUser({ telegram_id = null, username, coins = 1000 }) {
+// ——————————————————————————————————————————————
+// CRUD helpers
+// ——————————————————————————————————————————————
+export async function getUser (username) {
   const { rows } = await pool.query(
-    `INSERT INTO users (telegram_id, username, coins)
-     VALUES ($1, $2, $3)
-     RETURNING *`,
-    [telegram_id, username, coins]
+    'SELECT * FROM users WHERE username = $1',
+    [username]
+  );
+  return rows[0] || null;
+}
+
+export async function createUser (username, coins = 1000) {
+  const { rows } = await pool.query(
+    `INSERT INTO users (username, coins)
+       VALUES ($1, $2)
+       RETURNING *`,
+    [username, coins]
   );
   return rows[0];
 }
 
-export async function createOrGetUser(telegram_id, username = 'Anon') {
-  if (telegram_id) {
-    const existed = await getUserByTelegramId(telegram_id);
-    if (existed) return existed;
-  }
-  return await createUser({ telegram_id, username });
+export async function createOrGetUser (username) {
+  return (await getUser(username)) || (await createUser(username));
 }
 
-export async function updateUserCoins(idOrTid, delta, byTelegram = false) {
-  const field = byTelegram ? 'telegram_id' : 'id';
+export async function updateUserCoins (username, delta) {
   const { rows } = await pool.query(
-    `UPDATE users SET coins = coins + $1 WHERE ${field} = $2 RETURNING *`,
-    [delta, idOrTid]
+    `UPDATE users
+       SET coins = coins + $1
+       WHERE username = $2
+       RETURNING *`,
+    [delta, username]
   );
   return rows[0];
 }
 
-export async function applyDailyBonus(idOrTid, bonus = 100, byTelegram = false) {
+export async function applyDailyBonus (username, amount = 100) {
   const client = await pool.connect();
-  const field = byTelegram ? 'telegram_id' : 'id';
-
   try {
     await client.query('BEGIN');
-    const { rows } = await client.query(
-      `SELECT * FROM users WHERE ${field} = $1 FOR UPDATE`, [idOrTid]
-    );
-    const user = rows[0];
-    if (!user) { await client.query('ROLLBACK'); return { awarded:false,user:null }; }
 
-    const now = Date.now();
-    if (user.last_bonus && now - new Date(user.last_bonus).getTime() < 86_400_000) {
+    const { rows: sel } = await client.query(
+      `SELECT * FROM users WHERE username = $1 FOR UPDATE`,
+      [username]
+    );
+    const user = sel[0];
+    if (!user) { await client.query('ROLLBACK'); return { awarded:false, user:null }; }
+
+    const last = user.last_bonus ? new Date(user.last_bonus) : null;
+    if (last && Date.now() - last.getTime() < 86_400_000) {
       await client.query('ROLLBACK');
-      return { awarded:false,user };
+      return { awarded:false, user };
     }
 
-    const { rows: up } = await client.query(
-      `UPDATE users SET coins = coins + $1, last_bonus = NOW()
-       WHERE ${field} = $2 RETURNING *`,
-      [bonus, idOrTid]
+    const { rows: upd } = await client.query(
+      `UPDATE users
+         SET coins = coins + $1,
+             last_bonus = NOW()
+       WHERE username = $2
+       RETURNING *`,
+      [amount, username]
     );
+
     await client.query('COMMIT');
-    return { awarded:true,user:up[0] };
+    return { awarded:true, user: upd[0] };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -102,16 +108,13 @@ export async function applyDailyBonus(idOrTid, bonus = 100, byTelegram = false) 
   }
 }
 
-export async function getLeaderboard(limit = 10) {
+export async function getLeaderboard (limit = 10) {
   const { rows } = await pool.query(
-    `SELECT username, coins FROM users ORDER BY coins DESC LIMIT $1`,
+    `SELECT username, coins
+       FROM users
+       ORDER BY coins DESC
+       LIMIT $1`,
     [limit]
   );
   return rows;
 }
-
-/* --- ALIAS, чтобы routes.js не падал --- */
-export const getUser = getUserById;
-
-/* Если нужно напрямую pool */
-export { pool };
