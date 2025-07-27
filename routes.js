@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import {
   createOrGetUser,
-  getUserByTelegramId,
+  getUser,
   updateUserCoins,
   applyDailyBonus,
   getLeaderboard,
@@ -10,46 +10,41 @@ import {
 
 const router = Router();
 
-/* ---------- /api/auth ---------- */
+// -------- авторизация ----------
 router.post('/auth', async (req, res) => {
-  try {
-    // В браузерной версии ждём { username } в теле
-    const { username = 'Anon', telegram_id = null } = req.body;
-    const user = await createOrGetUser(telegram_id, username);
-    res.json({ user });          // без JWT
-  } catch (e) {
-    console.error('/auth', e);
-    res.status(500).json({ error: 'internal' });
-  }
+  const { username } = req.body;          // теперь присылаем username из браузера
+  if (!username) return res.status(400).json({ error:'Username required' });
+
+  const user = await createOrGetUser(username);
+  res.json({ user, token: username /* простейший “jwt” */ });
 });
 
-/* ---------- /api/me ---------- */
-router.get('/me/:id', async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const user = await getUserByTelegramId(id) || null;
-  if (!user) return res.status(404).json({ error: 'not found' });
+// -------- REST остальных энд-пойнтов ----------
+router.get('/me', async (req, res) => {
+  const token = req.get('authorization')?.replace('Bearer ','');
+  const user  = token ? await getUser(token) : null;
+  if (!user) return res.status(401).json({ error:'Auth' });
   res.json(user);
 });
 
-/* ---------- /api/bonus ---------- */
-router.post('/bonus/:id', async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const result = await applyDailyBonus(id, 100, true);
-  res.json(result);
-});
-
-/* ---------- /api/updateCoins ---------- */
-router.post('/updateCoins/:id', async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const { delta = 0 } = req.body;
-  const user = await updateUserCoins(id, delta, true);
-  if (!user) return res.status(404).json({ error: 'not found' });
+router.post('/updateCoins', async (req, res) => {
+  const token = req.get('authorization')?.replace('Bearer ','');
+  const { delta } = req.body || {};
+  const user = token ? await updateUserCoins(token, Number(delta)||0) : null;
+  if (!user) return res.status(401).json({ error:'Auth' });
   res.json({ user });
 });
 
-/* ---------- /api/leaderboard ---------- */
-router.get('/leaderboard', async (_, res) => {
-  res.json(await getLeaderboard(10));
+router.post('/bonus', async (req, res) => {
+  const token = req.get('authorization')?.replace('Bearer ','');
+  if (!token) return res.status(401).json({ error:'Auth' });
+  const result = await applyDailyBonus(token);
+  res.json(result);
+});
+
+router.get('/leaderboard', async (req,res) => {
+  const limit = Number(req.query.limit)||10;
+  res.json(await getLeaderboard(limit));
 });
 
 export default router;
